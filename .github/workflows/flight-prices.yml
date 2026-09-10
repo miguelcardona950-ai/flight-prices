@@ -1,0 +1,42 @@
+name: Weekly flight prices
+
+on:
+  schedule:
+    # 13:00 UTC every Monday. GitHub queues cron jobs on a busy shared pool,
+    # so the real start time can drift by several minutes.
+    - cron: "0 13 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  check-prices:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # No pip install step: the script uses the standard library only.
+      - name: Check prices
+        run: python check_flights.py
+        env:
+          FLIGHT_API_KEY: ${{ secrets.FLIGHT_API_KEY }}
+
+      # Only reached when the step above exits 0, so a failed run never
+      # commits anything.
+      - name: Commit report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports/
+          if git diff --staged --quiet; then
+            echo "Report unchanged; nothing to commit."
+          else
+            git commit -m "Flight prices for $(date -u +%Y-%m-%d)"
+            git push
+          fi

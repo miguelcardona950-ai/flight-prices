@@ -1,0 +1,43 @@
+# Routes to price each week.
+#
+# Every key under [settings] is a default that any single route can override
+# by repeating the key in its own [[routes]] block.
+
+[settings]
+# How far ahead of the run date to price the trip.
+depart_in_days = 30
+
+# Trip length in days. Set to 0 for a one-way search.
+return_after_days = 7
+
+# ISO currency code the provider should quote in.
+currency = "USD"
+
+adults = 1
+
+# Treat "the search came back with no flights" as a failed run. Leave this on
+# to guarantee every report is complete; turn it off only if one of your routes
+# is genuinely sparse and you would rather see it listed as empty.
+fail_on_empty = true
+
+# How many options to list per route in the report's detail section.
+max_offers_per_route = 3
+
+
+[[routes]]
+name = "San Francisco → Lisbon"
+origin = "SFO"
+destination = "LIS"
+
+[[routes]]
+name = "San Francisco → Tokyo"
+origin = "SFO"
+destination = "HND"
+# This one is a longer trip than the default.
+return_after_days = 14
+
+[[routes]]
+name = "New York → London (one way)"
+origin = "JFK"
+destination = "LHR"
+return_after_days = 0
