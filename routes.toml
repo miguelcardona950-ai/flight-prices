@@ -25,19 +25,16 @@ max_offers_per_route = 3
 
 
 [[routes]]
-name = "San Francisco → Lisbon"
-origin = "SFO"
-destination = "LIS"
+name = "Los Angeles → Zurich"
+origin = "LAX"
+destination = "ZRH"
 
 [[routes]]
-name = "San Francisco → Tokyo"
-origin = "SFO"
+name = "Los Angeles → Reykjavik"
+origin = "LAX"
+destination = "KEF"
+
+[[routes]]
+name = "Los Angeles → Tokyo"
+origin = "LAX"
 destination = "HND"
-# This one is a longer trip than the default.
-return_after_days = 14
-
-[[routes]]
-name = "New York → London (one way)"
-origin = "JFK"
-destination = "LHR"
-return_after_days = 0
