@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flight prices</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f7f7f5;
+    --panel: #ffffff;
+    --line: #e3e2de;
+    --ink: #1a1a18;
+    --ink-soft: #6b6a65;
+    --ink-faint: #9a9892;
+    --accent: #2f6f4f;
+    --up: #a4432f;
+    --down: #2f6f4f;
+    --grid: #ececea;
+    --shadow: 0 1px 2px rgba(20, 20, 18, .06), 0 1px 1px rgba(20, 20, 18, .04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #17171a;
+      --panel: #202024;
+      --line: #32323a;
+      --ink: #ececea;
+      --ink-soft: #a3a2a0;
+      --ink-faint: #74736f;
+      --accent: #7fba95;
+      --up: #e08a72;
+      --down: #7fba95;
+      --grid: #2b2b32;
+      --shadow: none;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 0 16px 56px;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Helvetica, Arial, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  .wrap { max-width: 880px; margin: 0 auto; }
+
+  header { padding: 36px 0 20px; }
+  h1 {
+    margin: 0;
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: -.01em;
+  }
+  .sub {
+    margin: 6px 0 0;
+    color: var(--ink-soft);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  h2 {
+    margin: 0 0 14px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  section { margin-top: 32px; }
+
+  /* ---- current price cards ---- */
+  .cards {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+    box-shadow: var(--shadow);
+  }
+  .card .route {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink);
+    margin: 0 0 2px;
+  }
+  .card .pair {
+    font-size: 11px;
+    color: var(--ink-faint);
+    letter-spacing: .05em;
+    margin: 0 0 12px;
+  }
+  .price {
+    font-size: 27px;
+    font-weight: 600;
+    letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .price.none { font-size: 17px; color: var(--ink-faint); font-weight: 500; }
+  .delta {
+    display: inline-block;
+    margin-top: 7px;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .delta.up   { color: var(--up); }
+  .delta.down { color: var(--down); }
+  .delta.flat { color: var(--ink-faint); }
+  .meta {
+    margin: 12px 0 0;
+    padding-top: 11px;
+    border-top: 1px solid var(--line);
+    font-size: 11.5px;
+    color: var(--ink-soft);
+    line-height: 1.6;
+  }
+
+  /* ---- charts ---- */
+  .chart-card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 14px 10px;
+    margin-bottom: 12px;
+    box-shadow: var(--shadow);
+  }
+  .chart-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+    margin: 0 2px 6px;
+  }
+  .chart-head .route { font-size: 13px; font-weight: 600; }
+  .chart-head .range {
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .chart svg { display: block; width: 100%; height: auto; }
+  .thin {
+    margin: 2px 2px 8px;
+    font-size: 12px;
+    color: var(--ink-faint);
+  }
+
+  /* ---- messages ---- */
+  .note {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    padding: 16px 18px;
+    box-shadow: var(--shadow);
+  }
+  .note.bad { border-left-color: var(--up); }
+  .note h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+  .note p  { margin: 0 0 8px; color: var(--ink-soft); font-size: 13.5px; }
+  .note p:last-child { margin-bottom: 0; }
+  .note code {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 12.5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .note pre {
+    margin: 10px 0 0;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    font-size: 12.5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  footer {
+    margin-top: 36px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+    font-size: 12px;
+    color: var(--ink-faint);
+  }
+
+  @media (max-width: 420px) {
+    body { padding: 0 12px 40px; }
+    header { padding: 26px 0 14px; }
+    h1 { font-size: 21px; }
+    .cards { grid-template-columns: 1fr; }
+    .price { font-size: 25px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Flight prices</h1>
+    <p class="sub" id="updated"></p>
+  </header>
+  <div id="main"></div>
+  <footer id="foot" hidden></footer>
+</div>
+
+<script>
+"use strict";
+
+// The schema this page knows how to draw. check_flights.py stamps the same
+// number into data.json, so a mismatch is reported rather than mis-drawn.
+var SCHEMA = 1;
+
+var main = document.getElementById("main");
+var updatedEl = document.getElementById("updated");
+var footEl = document.getElementById("foot");
+var state = null;
+
+function el(tag, cls, text) {
+  var n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+function note(title, paras, bad) {
+  var box = el("div", "note" + (bad ? " bad" : ""));
+  box.appendChild(el("h3", null, title));
+  paras.forEach(function (p) {
+    var node = el("p");
+    node.innerHTML = p;
+    box.appendChild(node);
+  });
+  return box;
+}
+
+function money(value, currency) {
+  if (typeof value !== "number" || !isFinite(value)) return "—";
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: currency || "USD",
+      maximumFractionDigits: 0
+    }).format(value);
+  } catch (err) {
+    return Math.round(value) + " " + (currency || "");
+  }
+}
+
+function shortDate(iso) {
+  var parts = String(iso).split("-");
+  if (parts.length !== 3) return iso;
+  var d = new Date(Date.UTC(+parts[0], +parts[1] - 1, +parts[2]));
+  if (isNaN(d)) return iso;
+  return d.toLocaleDateString(undefined, {
+    day: "numeric", month: "short", timeZone: "UTC"
+  });
+}
+
+function dayMs(iso) {
+  var p = String(iso).split("-");
+  return Date.UTC(+p[0], +p[1] - 1, +p[2]);
+}
+
+function duration(minutes) {
+  if (typeof minutes !== "number" || !isFinite(minutes) || minutes <= 0) return null;
+  return Math.floor(minutes / 60) + "h " + String(minutes % 60).padStart(2, "0") + "m";
+}
+
+function stopsLabel(stops) {
+  if (typeof stops !== "number") return null;
+  if (stops === 0) return "direct";
+  return stops + (stops === 1 ? " stop" : " stops");
+}
+
+/* Flatten data.json into one series per route, oldest first. */
+function buildSeries(data) {
+  var dates = Object.keys(data.history).sort();
+  var keys = Object.keys(data.routes).sort();
+  return keys.map(function (key) {
+    var meta = data.routes[key] || {};
+    var points = [];
+    var latestEntry = null;
+    var latestDate = null;
+
+    dates.forEach(function (date) {
+      var entry = (data.history[date] || {})[key];
+      if (!entry) return;
+      latestEntry = entry;
+      latestDate = date;
+      if (typeof entry.price === "number" && isFinite(entry.price)) {
+        points.push({ date: date, t: dayMs(date), price: entry.price,
+                      currency: entry.currency || "USD" });
+      }
+    });
+
+    return {
+      key: key,
+      name: meta.name || key,
+      pair: (meta.origin || "?") + " → " + (meta.destination || "?"),
+      points: points,
+      latest: latestEntry,
+      latestDate: latestDate
+    };
+  });
+}
+
+/* ---- current price cards ------------------------------------------------ */
+
+function cardFor(series) {
+  var card = el("div", "card");
+  card.appendChild(el("p", "route", series.name));
+  card.appendChild(el("p", "pair", series.pair));
+
+  var pts = series.points;
+  if (!pts.length) {
+    card.appendChild(el("div", "price none", "No price recorded"));
+    return card;
+  }
+
+  var last = pts[pts.length - 1];
+  card.appendChild(el("div", "price", money(last.price, last.currency)));
+
+  if (pts.length > 1) {
+    var prev = pts[pts.length - 2];
+    var diff = last.price - prev.price;
+    var cls = diff > 0.5 ? "up" : (diff < -0.5 ? "down" : "flat");
+    var arrow = diff > 0.5 ? "↑" : (diff < -0.5 ? "↓" : "→");
+    var text = cls === "flat"
+      ? arrow + " unchanged since " + shortDate(prev.date)
+      : arrow + " " + money(Math.abs(diff), last.currency) +
+        " since " + shortDate(prev.date);
+    card.appendChild(el("span", "delta " + cls, text));
+  } else {
+    card.appendChild(el("span", "delta flat", "first reading"));
+  }
+
+  var bits = [];
+  var entry = series.latest || {};
+  if (entry.airlines) bits.push(entry.airlines);
+  var s = stopsLabel(entry.stops);
+  if (s) bits.push(s);
+  var d = duration(entry.duration_minutes);
+  if (d) bits.push(d);
+
+  var meta = el("p", "meta");
+  meta.appendChild(document.createTextNode(bits.join(" · ") || "—"));
+  if (entry.depart) {
+    meta.appendChild(document.createElement("br"));
+    meta.appendChild(document.createTextNode(
+      entry["return"]
+        ? "Depart " + shortDate(entry.depart) + ", return " + shortDate(entry["return"])
+        : "Depart " + shortDate(entry.depart) + ", one way"
+    ));
+  }
+  meta.appendChild(document.createElement("br"));
+  meta.appendChild(document.createTextNode("Checked " + shortDate(series.latestDate)));
+  card.appendChild(meta);
+  return card;
+}
+
+/* ---- chart ------------------------------------------------------------- */
+
+var SVG_NS = "http://www.w3.org/2000/svg";
+
+function svgEl(tag, attrs) {
+  var node = document.createElementNS(SVG_NS, tag);
+  for (var k in attrs) {
+    if (attrs[k] != null) node.setAttribute(k, attrs[k]);
+  }
+  return node;
+}
+
+/* Built at the container's own pixel width so the viewBox maps 1:1 and text
+   stays at its true size instead of being scaled down on a phone. */
+function buildChart(points, width, height) {
+  var padL = 46, padR = 16, padT = 12, padB = 26;
+  var plotW = Math.max(width - padL - padR, 20);
+  var plotH = Math.max(height - padT - padB, 20);
+
+  var prices = points.map(function (p) { return p.price; });
+  var lo = Math.min.apply(null, prices);
+  var hi = Math.max.apply(null, prices);
+  var mid = (lo + hi) / 2;
+
+  var loPad = lo, hiPad = hi;
+  if (hi - lo < 1e-9) {
+    // A flat series would otherwise divide by zero; give it some room.
+    var room = Math.max(Math.abs(hi) * 0.05, 1);
+    loPad = lo - room;
+    hiPad = hi + room;
+  } else {
+    var slack = (hi - lo) * 0.12;
+    loPad = lo - slack;
+    hiPad = hi + slack;
+  }
+
+  var tLo = points[0].t;
+  var tHi = points[points.length - 1].t;
+
+  function X(t) {
+    if (tHi === tLo) return padL + plotW / 2;
+    return padL + ((t - tLo) / (tHi - tLo)) * plotW;
+  }
+  function Y(v) {
+    return padT + plotH - ((v - loPad) / (hiPad - loPad)) * plotH;
+  }
+
+  var svg = svgEl("svg", {
+    viewBox: "0 0 " + width + " " + height,
+    width: width,
+    height: height,
+    role: "img"
+  });
+  var currency = points[points.length - 1].currency;
+
+  // gridlines + price labels
+  [hi, mid, lo].forEach(function (value) {
+    var y = Y(value);
+    svg.appendChild(svgEl("line", {
+      x1: padL, y1: y, x2: padL + plotW, y2: y,
+      stroke: "var(--grid)", "stroke-width": 1
+    }));
+    var label = svgEl("text", {
+      x: padL - 8, y: y + 3.5, "text-anchor": "end",
+      "font-size": 10.5, fill: "var(--ink-faint)"
+    });
+    label.textContent = money(value, currency);
+    svg.appendChild(label);
+  });
+
+  // the line itself
+  if (points.length > 1) {
+    svg.appendChild(svgEl("polyline", {
+      points: points.map(function (p) { return X(p.t) + "," + Y(p.price); }).join(" "),
+      fill: "none",
+      stroke: "var(--accent)",
+      "stroke-width": 2,
+      "stroke-linejoin": "round",
+      "stroke-linecap": "round"
+    }));
+  }
+
+  // points, with a native tooltip each
+  points.forEach(function (p, i) {
+    var isLast = i === points.length - 1;
+    var dot = svgEl("circle", {
+      cx: X(p.t), cy: Y(p.price), r: isLast ? 4 : 2.75,
+      fill: isLast ? "var(--accent)" : "var(--panel)",
+      stroke: "var(--accent)", "stroke-width": 1.75
+    });
+    var title = document.createElementNS(SVG_NS, "title");
+    title.textContent = shortDate(p.date) + ": " + money(p.price, p.currency);
+    dot.appendChild(title);
+    svg.appendChild(dot);
+  });
+
+  // x labels: ends, plus the middle one when there is room
+  var ticks = [0];
+  if (points.length > 3) ticks.push(Math.floor((points.length - 1) / 2));
+  if (points.length > 1) ticks.push(points.length - 1);
+
+  ticks.forEach(function (i) {
+    var p = points[i];
+    var anchor = i === 0 ? "start" : (i === points.length - 1 ? "end" : "middle");
+    var text = svgEl("text", {
+      x: X(p.t), y: height - 8, "text-anchor": anchor,
+      "font-size": 10.5, fill: "var(--ink-faint)"
+    });
+    text.textContent = shortDate(p.date);
+    svg.appendChild(text);
+  });
+
+  return svg;
+}
+
+function chartCard(series) {
+  var card = el("div", "chart-card");
+
+  var head = el("div", "chart-head");
+  head.appendChild(el("span", "route", series.name));
+  var pts = series.points;
+  if (pts.length) {
+    var prices = pts.map(function (p) { return p.price; });
+    var cur = pts[pts.length - 1].currency;
+    head.appendChild(el("span", "range",
+      money(Math.min.apply(null, prices), cur) + " – " +
+      money(Math.max.apply(null, prices), cur)));
+  }
+  card.appendChild(head);
+
+  if (!pts.length) {
+    card.appendChild(el("p", "thin", "No prices recorded for this route yet."));
+    return card;
+  }
+  if (pts.length === 1) {
+    card.appendChild(el("p", "thin",
+      "One reading so far (" + shortDate(pts[0].date) + "). The chart appears " +
+      "after a second run."));
+    return card;
+  }
+
+  var holder = el("div", "chart");
+  card.appendChild(holder);
+  // Drawn after insertion so clientWidth is known.
+  holder.dataset.pending = "1";
+  holder._series = series;
+  return card;
+}
+
+function drawChart(holder, force) {
+  var series = holder._series;
+  if (!series) return;
+  var width = Math.max(Math.round(holder.clientWidth), 200);
+  // The SVG is built at the container's exact pixel width, so redrawing on
+  // every width change is what keeps it 1:1. Skipping an unchanged width also
+  // stops a ResizeObserver feedback loop.
+  if (!force && holder._drawnAt === width) return;
+  holder._drawnAt = width;
+  var height = width < 420 ? 150 : 180;
+  holder.textContent = "";
+  holder.appendChild(buildChart(series.points, width, height));
+}
+
+function drawCharts(force) {
+  var holders = document.querySelectorAll(".chart");
+  for (var i = 0; i < holders.length; i++) {
+    drawChart(holders[i], force);
+  }
+}
+
+/* Watch each chart's own box, so a container resize that fires no window
+   "resize" event - a rotated phone, a dragged split pane - still redraws. */
+var observer = typeof ResizeObserver === "function"
+  ? new ResizeObserver(function (entries) {
+      entries.forEach(function (entry) { drawChart(entry.target, false); });
+    })
+  : null;
+
+function watchCharts() {
+  if (!observer) return;
+  var holders = document.querySelectorAll(".chart");
+  for (var i = 0; i < holders.length; i++) observer.observe(holders[i]);
+}
+
+/* ---- render ------------------------------------------------------------ */
+
+function render(data) {
+  main.textContent = "";
+
+  var series = buildSeries(data);
+  var withData = series.filter(function (s) { return s.points.length; });
+
+  if (data.updated) {
+    updatedEl.textContent = "Updated " + String(data.updated).replace("T", " ")
+      .replace("Z", " UTC");
+  }
+
+  if (!series.length) {
+    main.appendChild(note("No runs recorded yet", [
+      "<code>data.json</code> exists but holds no routes. It fills in the " +
+      "first time the weekly job completes."
+    ]));
+    return;
+  }
+
+  var now = el("section");
+  now.appendChild(el("h2", null,
+    "Current " + (withData.length === 1 ? "price" : "prices")));
+  var cards = el("div", "cards");
+  series.forEach(function (s) { cards.appendChild(cardFor(s)); });
+  now.appendChild(cards);
+  main.appendChild(now);
+
+  var trend = el("section");
+  trend.appendChild(el("h2", null, "Price over time"));
+  series.forEach(function (s) { trend.appendChild(chartCard(s)); });
+  main.appendChild(trend);
+
+  var runs = Object.keys(data.history).length;
+  footEl.textContent = runs + (runs === 1 ? " run" : " runs") + " on record · " +
+    series.length + (series.length === 1 ? " route" : " routes") +
+    " · cheapest fare per route per run";
+  footEl.hidden = false;
+
+  drawCharts(true);
+  watchCharts();
+  // One more pass after layout settles, for the case where the first paint
+  // measured a container that was still being sized.
+  requestAnimationFrame(function () { drawCharts(false); });
+}
+
+/* ---- load -------------------------------------------------------------- */
+
+function fail(title, paras) {
+  main.textContent = "";
+  main.appendChild(note(title, paras, true));
+}
+
+function load() {
+  // Cache-bust so a freshly committed data.json is not served stale.
+  fetch("data.json?t=" + Date.now(), { cache: "no-store" })
+    .then(function (response) {
+      if (response.status === 404) {
+        throw { kind: "missing" };
+      }
+      if (!response.ok) {
+        throw { kind: "http", status: response.status };
+      }
+      return response.text();
+    })
+    .then(function (text) {
+      var data;
+      try {
+        data = JSON.parse(text);
+      } catch (err) {
+        throw { kind: "parse", message: String(err.message || err) };
+      }
+      if (!data || typeof data !== "object") {
+        throw { kind: "shape" };
+      }
+      if (data.schema !== SCHEMA) {
+        throw { kind: "schema", found: data.schema };
+      }
+      if (!data.routes || !data.history) {
+        throw { kind: "shape" };
+      }
+      state = data;
+      render(data);
+    })
+    .catch(function (err) {
+      if (err && err.kind === "missing") {
+        fail("No data yet", [
+          "<code>data.json</code> has not been created. It appears the first " +
+          "time the weekly job finishes a full run.",
+          "To generate it now, run the check locally with your API key set, " +
+          "or trigger the workflow by hand from the Actions tab."
+        ]);
+      } else if (err && err.kind === "http") {
+        fail("Could not load data.json", [
+          "The server answered with HTTP " + err.status + "."
+        ]);
+      } else if (err && err.kind === "parse") {
+        fail("data.json is not valid JSON", [
+          "The file loaded but could not be parsed: <code>" +
+          err.message.replace(/[<>&]/g, "") + "</code>",
+          "Nothing is drawn rather than guessing at partial data."
+        ]);
+      } else if (err && err.kind === "schema") {
+        fail("Unexpected data version", [
+          "This page draws schema <code>" + SCHEMA + "</code>, but " +
+          "<code>data.json</code> says <code>" + String(err.found) + "</code>.",
+          "Refusing to draw it rather than show numbers from a layout it may " +
+          "not match. Update <code>index.html</code> and " +
+          "<code>check_flights.py</code> together."
+        ]);
+      } else if (err && err.kind === "shape") {
+        fail("data.json is missing its routes or history", [
+          "The file parsed, but does not look like a price history."
+        ]);
+      } else if (location.protocol === "file:") {
+        fail("Needs a web server", [
+          "Browsers block <code>fetch()</code> from <code>file://</code>, so " +
+          "opening this file directly cannot read <code>data.json</code>.",
+          "Serve the folder instead, then open the address it prints:",
+          "<pre>python3 -m http.server 8000</pre>"
+        ]);
+      } else {
+        fail("Could not load data.json", [
+          "The request failed: <code>" +
+          String((err && err.message) || err).replace(/[<>&]/g, "") + "</code>"
+        ]);
+      }
+    });
+}
+
+// Fallback for browsers without ResizeObserver.
+var resizeTimer = null;
+window.addEventListener("resize", function () {
+  if (!state || observer) return;
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(function () { drawCharts(false); }, 120);
+});
+
+load();
+</script>
+</body>
+</html>

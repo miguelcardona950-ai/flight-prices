@@ -1,7 +1,8 @@
 # Weekly flight prices
 
-A single Python script that prices a short list of routes once a week and
-commits the results to `reports/<YYYY-MM-DD>.md`.
+A single Python script that prices a short list of routes once a week, commits
+the results to `reports/<YYYY-MM-DD>.md`, and appends them to `data.json` — a
+running price history that `index.html` charts.
 
 No framework, no dependencies — standard library only.
 
@@ -16,8 +17,14 @@ use a newer interpreter or `pip install tomli`, which it falls back to.
 | --- | --- |
 | `check_flights.py` | The whole program. |
 | `routes.toml` | The routes and search settings you edit. |
-| `reports/` | One dated markdown file per run. |
+| `reports/` | One dated markdown file per run, for reading. |
+| `data.json` | The full price history, appended to on every run. |
+| `index.html` | A dashboard that charts `data.json`. No build step. |
 | `.github/workflows/flight-prices.yml` | Weekly schedule + commit step. |
+| `.nojekyll` | Tells GitHub Pages to serve the files as-is. |
+
+`data.json` is created by the first successful run; it is not in the repo until
+then.
 
 ## Setup
 
@@ -78,7 +85,9 @@ the same day overwrites that day's file.
 ## What happens when something breaks
 
 The script treats a partial report as worse than no report, so it prices every
-route into memory first and only writes the file once all of them succeeded.
+route into memory first and only writes anything once all of them succeeded.
+That covers `data.json` too: a failed run leaves the history byte-for-byte
+unchanged rather than half-merged.
 
 - **Missing `FLIGHT_API_KEY`, or a broken `routes.toml`** — fails before any
   network call.
@@ -92,6 +101,13 @@ route into memory first and only writes the file once all of them succeeded.
   Apify's side and will be billed anyway, so retrying would pay twice for the
   same search. If your routes are simply slow, raise `REQUEST_TIMEOUT` rather
   than adding retries.
+- **A damaged `data.json`** — unparseable, or a schema this script does not
+  write — fails before any API call, and the file is **left untouched**. It is
+  the only copy of the history, so it is never silently restarted. Repair or
+  delete it by hand.
+- **Two routes with the same city pair** — refused at config load. The history
+  keys routes by origin-destination, so two `SFO`→`LIS` entries could not be
+  told apart.
 - **A route with no flights** — fails the run by default. If one of your routes
   is genuinely sparse and you would rather see it reported as empty, set
   `fail_on_empty = false` in `[settings]`.
@@ -103,6 +119,32 @@ GitHub emails you when a scheduled workflow fails.
 The file itself is written atomically (rendered in memory, written to a temp
 file, then moved into place), so a cancelled job can't leave a truncated report
 behind either.
+
+## The dashboard
+
+`index.html` reads `data.json` and shows the current price per route, then a
+line chart of each route over time. It is plain HTML, CSS and JavaScript in one
+file — no build step, no framework, and nothing loaded from a CDN, so whatever
+is in the repo is exactly what runs.
+
+**Opening it from disk will not work.** Browsers block `fetch()` on `file://`,
+so double-clicking `index.html` cannot read `data.json`; the page says so and
+tells you what to do. Serve the folder instead:
+
+```bash
+python3 -m http.server 8000
+```
+
+Then open <http://localhost:8000>.
+
+**To publish it,** turn on GitHub Pages: **Settings → Pages → Source → Deploy
+from a branch**, pick `main` and the `/ (root)` folder. The dashboard lands at
+`https://<username>.github.io/<repo>/`, and refreshes itself every time the
+weekly job commits. This is a repo setting, so you have to flip it yourself.
+
+Note that Pages serves a **public** site, even from a private repo on some
+plans — check before publishing if your routes say something about your travel
+plans you would rather keep to yourself.
 
 ## Using a different provider
 
@@ -126,6 +168,9 @@ and GETs otherwise, and sends the token as `Authorization: Bearer`; adjust the
   has its scheduled workflows disabled. Since this workflow commits a report
   every week, it keeps itself alive — but if you turn off the commit step, the
   schedule will eventually stop.
+- **History size.** About 23 KB a year for three weekly routes, so one file
+  stays fine indefinitely. Keys are written in sorted order, so each run's
+  commit diff is just the lines that changed.
 - **Cost.** The actor bills per event: roughly $0.003 per search plus $0.0005
   per offer returned. The script asks for up to 10 offers per route
   (`API_MAX_OFFERS` in the script), so a route costs about $0.008 a run — three

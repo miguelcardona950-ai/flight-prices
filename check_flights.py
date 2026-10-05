@@ -2,13 +2,15 @@
 """Weekly flight-price check.
 
 Reads a small list of routes from routes.toml, prices each one against a
-flight-search API, and writes reports/<YYYY-MM-DD>.md.
+flight-search API, and writes two files: reports/<YYYY-MM-DD>.md to read, and
+data.json, the append-only price history that index.html charts.
 
-One rule shapes the whole script: the report is written only when *every*
-route was priced successfully. Any failure - missing key, bad config, HTTP
-error, unparseable response, or a route with no offers - aborts the run with
-a non-zero exit code and leaves reports/ untouched. A partial report is worse
-than no report, because it looks complete.
+One rule shapes the whole script: nothing is written unless *every* route was
+priced successfully. Any failure - missing key, bad config, HTTP error,
+unparseable response, or a route with no offers - aborts the run with a
+non-zero exit code and leaves reports/ and data.json exactly as they were. A
+partial report is worse than no report because it looks complete, and a
+half-merged history is worse still: it is the record.
 
 Standard library only (Python 3.11+); nothing to pip install.
 """
@@ -44,6 +46,11 @@ API_KEY_ENV = "FLIGHT_API_KEY"
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "routes.toml"
 REPORTS_DIR = ROOT / "reports"
+HISTORY_PATH = ROOT / "data.json"
+
+# Bumped only when the shape of data.json changes incompatibly. index.html
+# checks it too, so an old page refuses new data rather than mis-drawing it.
+HISTORY_SCHEMA = 1
 
 # An actor run is a container cold start plus live scraping, so it is slow by
 # nature and each attempt is billed. Hence the long timeout and few retries.
@@ -388,6 +395,21 @@ def load_config(path: Path) -> list[dict]:
         route.setdefault("name", f"{route['origin']} → {route['destination']}")
         routes.append(route)
 
+    # data.json keys each route by origin-destination, so two routes sharing a
+    # city pair would overwrite each other's history. Refuse rather than
+    # silently merge two different trips into one series.
+    seen: dict[str, int] = {}
+    for index, route in enumerate(routes, start=1):
+        key = history_key(route)
+        if key in seen:
+            raise FlightCheckError(
+                f"{path.name}: routes #{seen[key]} and #{index} are both "
+                f"{key}. The price history keys routes by city pair, so they "
+                "cannot be told apart. Drop one, or point it at a nearby "
+                "airport."
+            )
+        seen[key] = index
+
     return routes
 
 
@@ -399,6 +421,15 @@ def trip_dates(route: dict, today: date) -> tuple[date, date | None]:
 
 def route_label(route: dict) -> str:
     return f"{route['origin']}->{route['destination']}"
+
+
+def history_key(route: dict) -> str:
+    """Stable identity for a route in data.json.
+
+    Origin and destination are the only parts of a route that survive config
+    edits: `name` is free text, and the trip-length settings get tweaked.
+    """
+    return f"{route['origin']}-{route['destination']}"
 
 
 # ---------------------------------------------------------------------------
@@ -488,17 +519,129 @@ def _duration(minutes: int | None) -> str:
     return f"{minutes // 60}h {minutes % 60:02d}m"
 
 
-def write_report(path: Path, content: str) -> None:
-    """Write the report in one atomic step.
+def write_text_atomic(path: Path, content: str) -> None:
+    """Write a file in one atomic step.
 
-    Rendering happens entirely in memory first, then the file lands via
+    Content is built entirely in memory first, then the file lands via
     os.replace(), so a crash or a cancelled CI job can never leave a
-    half-written report behind.
+    half-written file behind.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + ".tmp")
     temp.write_text(content, encoding="utf-8")
     os.replace(temp, path)
+
+
+# ---------------------------------------------------------------------------
+# Price history
+# ---------------------------------------------------------------------------
+
+
+def load_history(path: Path) -> dict:
+    """Read data.json, or return an empty history if it does not exist yet.
+
+    Called before the first network request, so a damaged history file costs
+    nothing to discover. A file that exists but cannot be understood is an
+    error and never a reason to start over: it is the only copy of the record.
+    """
+    if not path.exists():
+        return {
+            "schema": HISTORY_SCHEMA,
+            "updated": None,
+            "routes": {},
+            "history": {},
+        }
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise FlightCheckError(
+            f"{path.name} is not valid JSON ({exc}). It holds the entire price "
+            "history, so it was left untouched. Repair or delete it by hand."
+        ) from exc
+    except OSError as exc:
+        raise FlightCheckError(f"Could not read {path.name}: {exc}") from exc
+
+    if not isinstance(raw, dict):
+        raise FlightCheckError(
+            f"{path.name} should hold a JSON object, found "
+            f"{type(raw).__name__}. It was left untouched."
+        )
+
+    if raw.get("schema") != HISTORY_SCHEMA:
+        raise FlightCheckError(
+            f"{path.name} is schema {raw.get('schema')!r} but this script "
+            f"writes schema {HISTORY_SCHEMA}. It was left untouched."
+        )
+
+    for field in ("routes", "history"):
+        if not isinstance(raw.get(field), dict):
+            raise FlightCheckError(
+                f'{path.name}: "{field}" should be a JSON object. '
+                "It was left untouched."
+            )
+
+    return raw
+
+
+def merge_run(
+    history: dict,
+    run_date: date,
+    generated_at: datetime,
+    results: list[tuple[dict, list[Offer]]],
+) -> dict:
+    """Fold this run's cheapest fares into the history, in memory.
+
+    The whole day's block is replaced rather than added to, so re-running on
+    the same date corrects that day instead of appending a duplicate.
+    """
+    day: dict[str, dict] = {}
+
+    for route, offers in results:
+        key = history_key(route)
+        outbound, inbound = trip_dates(route, run_date)
+        best = offers[0] if offers else None
+
+        history["routes"][key] = {
+            "name": route["name"],
+            "origin": route["origin"],
+            "destination": route["destination"],
+        }
+        # A route with no offers is recorded with a null price rather than
+        # dropped, so the history says "looked, found nothing" and the chart
+        # can leave a gap.
+        day[key] = {
+            "price": round(best.price, 2) if best else None,
+            "currency": best.currency if best else route["currency"],
+            "airlines": best.airlines if best else None,
+            "stops": best.stops if best else None,
+            "duration_minutes": best.duration_minutes if best else None,
+            "depart": outbound.isoformat(),
+            "return": inbound.isoformat() if inbound else None,
+            "offers": len(offers),
+        }
+
+    history["schema"] = HISTORY_SCHEMA
+    history["updated"] = generated_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    history["history"][run_date.isoformat()] = day
+    return history
+
+
+def render_history(history: dict) -> str:
+    """Serialise the history with stable key order, for small readable diffs."""
+    ordered = {
+        "schema": history["schema"],
+        "updated": history["updated"],
+        "routes": {key: history["routes"][key] for key in sorted(history["routes"])},
+        "history": {
+            day: {
+                key: history["history"][day][key]
+                for key in sorted(history["history"][day])
+            }
+            for day in sorted(history["history"])
+        },
+    }
+    return json.dumps(ordered, indent=2, ensure_ascii=False) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +653,9 @@ def main() -> int:
     try:
         api_key = require_api_key()
         routes = load_config(CONFIG_PATH)
+        # Validated before a single billed API call, so a damaged history file
+        # is found for free.
+        history = load_history(HISTORY_PATH)
 
         now = datetime.now(timezone.utc)
         today = now.date()
@@ -533,14 +679,31 @@ def main() -> int:
             print(f"  {len(offers)} offers, best {best}")
             results.append((route, offers))
 
+        # Build both outputs completely before either one is written. Two
+        # files cannot be made atomic together, but by this point nothing is
+        # left that can fail for any reason other than disk I/O, and both
+        # files are idempotent per day, so a re-run repairs a split write.
+        report = render_report(today, now, results)
+        history_json = render_history(merge_run(history, today, now, results))
+
         report_path = REPORTS_DIR / f"{today.isoformat()}.md"
-        write_report(report_path, render_report(today, now, results))
-        print(f"\nWrote reports/{report_path.name} ({len(results)} routes).")
+        write_text_atomic(HISTORY_PATH, history_json)
+        write_text_atomic(report_path, report)
+
+        runs = len(history["history"])
+        print(
+            f"\nWrote reports/{report_path.name} and {HISTORY_PATH.name} "
+            f"({len(results)} routes; {runs} run{'' if runs == 1 else 's'} "
+            "on record)."
+        )
         return 0
 
     except FlightCheckError as exc:
         print(f"\nERROR: {exc}", file=sys.stderr)
-        print("No report was written.", file=sys.stderr)
+        print(
+            "Nothing was written; the report and data.json are unchanged.",
+            file=sys.stderr,
+        )
         return 1
 
 
