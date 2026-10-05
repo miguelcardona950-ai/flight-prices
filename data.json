@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "updated": "2026-10-05T23:42:48Z",
+  "routes": {
+    "JFK-LHR": {
+      "name": "New York → London (one way)",
+      "origin": "JFK",
+      "destination": "LHR"
+    },
+    "SFO-HND": {
+      "name": "San Francisco → Tokyo",
+      "origin": "SFO",
+      "destination": "HND"
+    },
+    "SFO-LIS": {
+      "name": "San Francisco → Lisbon",
+      "origin": "SFO",
+      "destination": "LIS"
+    }
+  },
+  "history": {
+    "2026-10-05": {
+      "JFK-LHR": {
+        "price": 293.0,
+        "currency": "USD",
+        "airlines": "EI",
+        "stops": 1,
+        "duration_minutes": 585,
+        "depart": "2026-11-04",
+        "return": null,
+        "offers": 10
+      },
+      "SFO-HND": {
+        "price": 878.0,
+        "currency": "USD",
+        "airlines": "KE",
+        "stops": 1,
+        "duration_minutes": 1085,
+        "depart": "2026-11-04",
+        "return": "2026-11-18",
+        "offers": 10
+      },
+      "SFO-LIS": {
+        "price": 765.0,
+        "currency": "USD",
+        "airlines": "TP",
+        "stops": 0,
+        "duration_minutes": 655,
+        "depart": "2026-11-04",
+        "return": "2026-11-11",
+        "offers": 8
+      }
+    }
+  }
+}
