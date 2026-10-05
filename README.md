@@ -21,10 +21,13 @@ use a newer interpreter or `pip install tomli`, which it falls back to.
 
 ## Setup
 
-**1. Get an API key.**
-The script ships with an adapter for [SerpApi](https://serpapi.com)'s Google
-Flights engine, which authenticates with a single key. Sign up and copy the key
-from your dashboard. (See *Using a different provider* below to swap it out.)
+**1. Get an Apify API token.**
+The script calls the [kuezi/flight-offers-api](https://apify.com/kuezi/flight-offers-api)
+actor on Apify, which stands in for the retired Amadeus Self-Service
+flight-offers endpoint and returns Amadeus-shaped offers. Sign up at
+[apify.com](https://apify.com), then copy your API token from **Settings →
+Integrations** in the Apify Console. (See *Using a different provider* below to
+swap it out.)
 
 **2. Add the key as a repository secret.**
 In the repo: **Settings → Secrets and variables → Actions → New repository
@@ -79,10 +82,16 @@ route into memory first and only writes the file once all of them succeeded.
 
 - **Missing `FLIGHT_API_KEY`, or a broken `routes.toml`** — fails before any
   network call.
-- **HTTP 401/403** — fails immediately with a message pointing at the key. No
-  retries, so a bad key doesn't burn through your quota.
-- **Timeouts, network errors, HTTP 429/5xx** — retried 3 times with a growing
-  delay, then the run fails.
+- **HTTP 401/403** — fails immediately with a message pointing at the token. No
+  retries, so a bad token doesn't burn through your credit.
+- **Network errors, HTTP 429/5xx** — retried twice with a growing delay, then
+  the run fails. Retries are deliberately few, because each attempt starts a
+  *billed* actor run.
+- **Timeout** — fails immediately and is **not** retried. An actor run that
+  hasn't answered within `REQUEST_TIMEOUT` (180s) is probably still executing on
+  Apify's side and will be billed anyway, so retrying would pay twice for the
+  same search. If your routes are simply slow, raise `REQUEST_TIMEOUT` rather
+  than adding retries.
 - **A route with no flights** — fails the run by default. If one of your routes
   is genuinely sparse and you would rather see it reported as empty, set
   `fail_on_empty = false` in `[settings]`.
@@ -100,13 +109,13 @@ behind either.
 Provider-specific code is confined to one block in `check_flights.py`, marked
 `# Provider adapter`. To switch, rewrite two functions:
 
-- `search_route()` — build the request and call `_get_json()`.
+- `search_route()` — build the request and call `_request_json()`.
 - `_parse_offers()` — turn the response into a list of `Offer` records.
 
 Also update `PROVIDER_NAME` and `API_URL`. Nothing else in the script knows or
-cares where the numbers came from. If your provider authenticates with a header
-instead of a query parameter, pass it through the `headers` dict in
-`_get_json()`.
+cares where the numbers came from. `_request_json()` POSTs when given a `body`
+and GETs otherwise, and sends the token as `Authorization: Bearer`; adjust the
+`headers` dict there if your provider wants it somewhere else.
 
 ## Notes
 
@@ -117,8 +126,14 @@ instead of a query parameter, pass it through the `headers` dict in
   has its scheduled workflows disabled. Since this workflow commits a report
   every week, it keeps itself alive — but if you turn off the commit step, the
   schedule will eventually stop.
-- **API quota.** Each run makes one request per route. Three routes on a weekly
-  schedule is about 13 requests a month.
+- **Cost.** The actor bills per event: roughly $0.003 per search plus $0.0005
+  per offer returned. The script asks for up to 10 offers per route
+  (`API_MAX_OFFERS` in the script), so a route costs about $0.008 a run — three
+  routes weekly is well under $0.20 a month. Each retry is another billed run,
+  which is why there are only two attempts and no retry on timeout.
+- **Airline names show as IATA codes** (`TP`, `BA`) rather than full names. The
+  actor returns Amadeus's `response.data`, which carries carrier codes but not
+  the `dictionaries.carriers` lookup table that maps them to names.
 - **Dates are UTC.** The filename and the search dates come from the UTC clock,
   so CI and a local run on the same day agree. If you run it late in the evening
   in a Western timezone, the report is dated tomorrow.

@@ -17,10 +17,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -45,9 +45,11 @@ ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "routes.toml"
 REPORTS_DIR = ROOT / "reports"
 
-REQUEST_TIMEOUT = 30        # seconds allowed per HTTP call
-MAX_ATTEMPTS = 3            # attempts per route before giving up
-BACKOFF_SECONDS = 5         # multiplied by the attempt number
+# An actor run is a container cold start plus live scraping, so it is slow by
+# nature and each attempt is billed. Hence the long timeout and few retries.
+REQUEST_TIMEOUT = 180       # seconds allowed per actor run
+MAX_ATTEMPTS = 2            # attempts per route; each one starts a BILLED run
+BACKOFF_SECONDS = 15        # multiplied by the attempt number
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 
 DEFAULT_SETTINGS = {
@@ -71,14 +73,27 @@ class FlightCheckError(Exception):
 # a different provider, rewrite search_route() and _parse_offers(); the rest of
 # the script does not care where the numbers came from.
 #
-# Current provider: SerpApi's Google Flights engine (https://serpapi.com).
-# It authenticates with a single API key passed as a query parameter, which is
-# why the key comes from one environment variable.
+# Current provider: the kuezi/flight-offers-api actor on Apify
+# (https://apify.com/kuezi/flight-offers-api), called through Apify's
+# run-sync-get-dataset-items endpoint. The actor stands in for the retired
+# Amadeus Self-Service flight-offers call and returns Amadeus-shaped offers,
+# so the parsing below follows Amadeus field names.
+#
+# FLIGHT_API_KEY holds an Apify API token. It travels in an Authorization
+# header, never in the query string.
 # ---------------------------------------------------------------------------
 
-PROVIDER_NAME = "Google Flights via SerpApi"
-API_URL = "https://serpapi.com/search"
-USER_AGENT = "weekly-flight-prices/1.0"
+PROVIDER_NAME = "Amadeus-shaped offers via Apify (kuezi/flight-offers-api)"
+API_URL = (
+    "https://api.apify.com/v2/acts/kuezi~flight-offers-api"
+    "/run-sync-get-dataset-items"
+)
+USER_AGENT = "weekly-flight-prices/2.0"
+
+# How many offers to ask the actor for per route. The actor bills per offer
+# saved, so keep this just deep enough that the cheapest fare in the list
+# really is the cheapest.
+API_MAX_OFFERS = 10
 
 
 @dataclass(frozen=True)
@@ -91,53 +106,79 @@ class Offer:
 
 
 def search_route(route: dict, api_key: str, today: date) -> list[Offer]:
-    """Return every offer the provider knows about, cheapest first."""
+    """Return every offer the actor found for this route, cheapest first."""
     outbound, inbound = trip_dates(route, today)
 
-    params = {
-        "engine": "google_flights",
-        "departure_id": route["origin"],
-        "arrival_id": route["destination"],
-        "outbound_date": outbound.isoformat(),
-        "type": 1 if inbound else 2,          # 1 = round trip, 2 = one way
-        "currency": route["currency"],
-        "adults": route["adults"],
-        "hl": "en",
-        "api_key": api_key,
+    actor_input = {
+        "endpoint": "flight-offers",
+        "originLocationCode": route["origin"],
+        "destinationLocationCode": route["destination"],
+        "departureDate": outbound.isoformat(),
+        "adults": int(route["adults"]),
+        "currencyCode": route["currency"],
+        "max": max(API_MAX_OFFERS, int(route["max_offers_per_route"])),
+        "oneWay": inbound is None,
     }
     if inbound:
-        # For a round trip the first response prices the outbound options at
-        # the full round-trip fare, which is what we want to track.
-        params["return_date"] = inbound.isoformat()
+        # The actor searches one-way unless told otherwise, so a round trip
+        # needs the return date and oneWay=False together.
+        actor_input["returnDate"] = inbound.isoformat()
 
     label = route_label(route)
-    payload = _get_json(f"{API_URL}?{urllib.parse.urlencode(params)}", label)
+    payload = _request_json(API_URL, label, body=actor_input, token=api_key)
 
-    # The provider answers HTTP 200 with an "error" field for bad keys, unknown
-    # airport codes and empty searches, so a 200 is not proof of success.
-    if isinstance(payload.get("error"), str):
-        raise FlightCheckError(f"{label}: API reported an error: {payload['error']}")
+    # run-sync-get-dataset-items answers with the dataset rows themselves: a
+    # bare list of flight offers, the equivalent of Amadeus's response.data.
+    # Apify reports its own failures as a JSON object instead, so HTTP 200 is
+    # still not proof of success.
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            raise FlightCheckError(
+                f"{label}: Apify reported {error.get('type') or 'an error'}: "
+                f"{error.get('message') or error}"
+            )
+        raise FlightCheckError(
+            f"{label}: expected a list of offers from the actor, got a JSON "
+            f"object with keys {sorted(payload)[:6]}."
+        )
+    if not isinstance(payload, list):
+        raise FlightCheckError(
+            f"{label}: expected a list of offers from the actor, got "
+            f"{type(payload).__name__}. The actor's output shape may have changed."
+        )
 
     return _parse_offers(payload, route["currency"])
 
 
-def _parse_offers(payload: dict, currency: str) -> list[Offer]:
+def _parse_offers(rows: list, currency: str) -> list[Offer]:
+    """Turn Amadeus-shaped flight offers into Offer records, cheapest first."""
     offers: list[Offer] = []
-    groups = (payload.get("best_flights") or []) + (payload.get("other_flights") or [])
 
-    for entry in groups:
-        price = entry.get("price")
-        if price is None:
+    for row in rows:
+        if not isinstance(row, dict):
             continue
-        legs = entry.get("flights") or []
-        airlines = sorted({leg["airline"] for leg in legs if leg.get("airline")})
+
+        price = row.get("price") or {}
+        # Amadeus sends money as strings, and grandTotal is the one with fees.
+        try:
+            amount = float(price.get("grandTotal") or price.get("total"))
+        except (TypeError, ValueError):
+            continue
+
+        itineraries = [it for it in (row.get("itineraries") or []) if isinstance(it, dict)]
+        # itineraries[0] is the outbound leg. The Depart, Stops and Duration
+        # columns all describe that leg; the price covers the whole trip.
+        outbound = itineraries[0] if itineraries else {}
+        segments = [s for s in (outbound.get("segments") or []) if isinstance(s, dict)]
+
         offers.append(
             Offer(
-                price=float(price),
-                currency=currency,
-                airlines=" / ".join(airlines) or "unknown",
-                stops=max(len(legs) - 1, 0),
-                duration_minutes=entry.get("total_duration"),
+                price=amount,
+                currency=price.get("currency") or currency,
+                airlines=_airlines(row, segments),
+                stops=max(len(segments) - 1, 0),
+                duration_minutes=_iso8601_minutes(outbound.get("duration")),
             )
         )
 
@@ -145,22 +186,86 @@ def _parse_offers(payload: dict, currency: str) -> list[Offer]:
     return offers
 
 
+def _airlines(row: dict, segments: list) -> str:
+    """Airline names when the actor supplies them, otherwise IATA codes.
+
+    The dataset rows are Amadeus's response.data, which carries carrier codes
+    but not the dictionaries.carriers name lookup, so this normally renders as
+    codes like "TP". Segment-level name fields are tried first in case the
+    actor's googleFlights metadata fills one in.
+    """
+    for key in ("carrierName", "airline", "airlineName"):
+        names = {seg[key] for seg in segments if isinstance(seg.get(key), str) and seg[key]}
+        if names:
+            return " / ".join(sorted(names))
+
+    codes = {c for c in (row.get("validatingAirlineCodes") or []) if isinstance(c, str) and c}
+    if not codes:
+        codes = {
+            seg["carrierCode"]
+            for seg in segments
+            if isinstance(seg.get("carrierCode"), str) and seg["carrierCode"]
+        }
+    return " / ".join(sorted(codes)) or "unknown"
+
+
+def _iso8601_minutes(value: object) -> int | None:
+    """Minutes from an ISO-8601 duration such as PT14H30M or P1DT2H5M."""
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(
+        r"P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:\d+(?:[.,]\d+)?S)?)?",
+        value.strip(),
+    )
+    if not match:
+        return None
+    days, hours, minutes = (int(part) if part else 0 for part in match.groups())
+    return (days * 1440 + hours * 60 + minutes) or None
+
+
 # ---------------------------------------------------------------------------
 # HTTP
 # ---------------------------------------------------------------------------
 
 
-def _get_json(url: str, label: str) -> dict:
-    """GET a JSON document, retrying transient failures.
+def _timeout_error(label: str) -> "FlightCheckError":
+    """A timeout is not retried, so explain why and what to check."""
+    return FlightCheckError(
+        f"{label}: no response within {REQUEST_TIMEOUT}s. The actor run is "
+        "probably still going on Apify and will be billed either way, so it was "
+        "not retried. Check the run in the Apify console, and raise "
+        "REQUEST_TIMEOUT if these searches are simply slow."
+    )
 
-    The URL carries the API key, so it is never written to a log line or an
-    error message. Report the route instead.
+
+def _request_json(
+    url: str,
+    label: str,
+    body: dict | None = None,
+    token: str = "",
+) -> dict | list:
+    """Send a request and return the decoded JSON, retrying transient failures.
+
+    POSTs when `body` is given, otherwise GETs. The token travels in an
+    Authorization header, so it never reaches a URL, a log line or an error
+    message - report the route instead.
+
+    Timeouts are deliberately *not* retried: the actor run is probably still
+    executing on Apify's side and will be billed, so a second attempt would pay
+    twice for the same search. Rate limits and 5xx still retry.
     """
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
     last_error = ""
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            request = urllib.request.Request(url, data=data, headers=headers)
             with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
                 return json.loads(response.read().decode("utf-8"))
 
@@ -168,20 +273,24 @@ def _get_json(url: str, label: str) -> dict:
             detail = _error_body(exc)
             if exc.code in (401, 403):
                 raise FlightCheckError(
-                    f"{label}: the API rejected the credentials (HTTP {exc.code}). "
-                    f"Check that {API_KEY_ENV} holds a valid key.{detail}"
+                    f"{label}: Apify rejected the credentials (HTTP {exc.code}). "
+                    f"Check that {API_KEY_ENV} holds a valid Apify API token."
+                    f"{detail}"
                 ) from exc
             if exc.code not in RETRY_STATUSES:
                 raise FlightCheckError(
-                    f"{label}: API returned HTTP {exc.code}.{detail}"
+                    f"{label}: Apify returned HTTP {exc.code}.{detail}"
                 ) from exc
             last_error = f"HTTP {exc.code}{detail}"
 
-        except urllib.error.URLError as exc:
-            last_error = f"network error: {exc.reason}"
+        except TimeoutError as exc:
+            raise _timeout_error(label) from exc
 
-        except TimeoutError:
-            last_error = f"timed out after {REQUEST_TIMEOUT}s"
+        except urllib.error.URLError as exc:
+            # A connect-phase timeout arrives wrapped in URLError.
+            if isinstance(exc.reason, TimeoutError):
+                raise _timeout_error(label) from exc
+            last_error = f"network error: {exc.reason}"
 
         except json.JSONDecodeError as exc:
             last_error = f"response was not JSON ({exc})"
