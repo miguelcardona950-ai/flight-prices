@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-11-09T22:45:35Z",
+  "updated": "2026-11-16T22:35:33Z",
   "routes": {
     "LAX-HND": {
       "name": "Los Angeles → Tokyo",
@@ -209,6 +209,38 @@
         "depart": "2026-12-09",
         "return": "2026-12-16",
         "offers": 8
+      }
+    },
+    "2026-11-16": {
+      "LAX-HND": {
+        "price": 1284.0,
+        "currency": "USD",
+        "airlines": "multi",
+        "stops": 1,
+        "duration_minutes": 1056,
+        "depart": "2026-12-16",
+        "return": "2026-12-23",
+        "offers": 8
+      },
+      "LAX-KEF": {
+        "price": 1190.0,
+        "currency": "USD",
+        "airlines": "multi",
+        "stops": 1,
+        "duration_minutes": 975,
+        "depart": "2026-12-16",
+        "return": "2026-12-23",
+        "offers": 10
+      },
+      "LAX-ZRH": {
+        "price": 1250.0,
+        "currency": "USD",
+        "airlines": "LO",
+        "stops": 1,
+        "duration_minutes": 2155,
+        "depart": "2026-12-16",
+        "return": "2026-12-23",
+        "offers": 10
       }
     }
   }
